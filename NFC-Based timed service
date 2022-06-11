@@ -1,1 +1,223 @@
-NFC-Based timed service project on Arduino to rent machines.
+//NFC-Based timed service project on Arduino to rent machines more effectively 
+//Youtube link: https://www.youtube.com/watch?v=QipXkgqaUxg
+
+#include <deprecated.h>
+#include <MFRC522.h>
+#include <MFRC522Extended.h>
+#include <require_cpp11.h>
+/*
+COE 424 project Done by:
+Hassan Alawadh    201325050
+Khalid Nouh       201458120
+Ali Alshakhs      201614800
+The code will read an RFID card then it will run a motor based on the number of available period on the card for a certain of time, then it will deduct it from the card by wiriting the new value to it.
+It will repeate the process as long as the card is not empty and it's connectd to the reader.
+*/
+#include <SPI.h>
+#include <MFRC522.h>
+
+#define SS_PIN 10 //SDA for the reader
+#define RST_PIN 9 //RST for the reader
+#define LED_G 4 //define green LED pin
+#define LED_R 5 //define red LED
+#define BUZZER 2 //buzzer pin
+#define MOTOR 3 //Motor pin
+
+MFRC522 mfrc522(SS_PIN, RST_PIN);   // Create MFRC522 instance.
+
+// Helper routine to dump a byte array as hex values to Serial.
+void dump_byte_array(byte *buffer, byte bufferSize) {
+    for (byte i = 0; i < bufferSize; i++) {
+        Serial.print(buffer[i] < 0x10 ? " 0" : " ");
+        Serial.print(buffer[i], HEX);
+    }
+}
+
+void setup() 
+{
+  Serial.begin(9600);   // Initiate a serial communication
+  SPI.begin();      // Initiate  SPI bus
+  mfrc522.PCD_Init();   // Initiate MFRC522
+
+//set the LED, Motor and Buzzer pins to be output
+  pinMode(LED_G, OUTPUT);
+  pinMode(LED_R, OUTPUT);
+  pinMode(MOTOR, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  noTone(BUZZER);
+
+  
+  Serial.println("Put your card to the reader...");
+  Serial.println();
+}
+
+void loop() //start infinite loop to read and write to the connected cards
+{
+  // Check if the card is connected then wait 2 seconds then check again to make sure that the card is not connected before turning the motor off
+  delay(2000);
+  if ( ! mfrc522.PICC_IsNewCardPresent()) 
+  {
+     delay(2000);
+      if ( ! mfrc522.PICC_IsNewCardPresent()) 
+  {
+    digitalWrite(MOTOR, LOW);
+    return;
+  }
+  }
+  
+  // Select one of the cards
+  if ( ! mfrc522.PICC_ReadCardSerial()) 
+  {
+    return;
+  }
+  
+  
+  // Prepare key - all keys are set to FFFFFFFFFFFFh at chip delivery from the factory.
+  MFRC522::MIFARE_Key key;
+  for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
+    dump_byte_array(key.keyByte, MFRC522::MF_KEY_SIZE);
+
+  //Show UID on serial monitor
+  Serial.print("UID tag :");
+  String content= "";
+  byte letter;
+  for (byte i = 0; i < mfrc522.uid.size; i++) 
+  {
+     Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
+     Serial.print(mfrc522.uid.uidByte[i], HEX);
+     content.concat(String(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " "));
+     content.concat(String(mfrc522.uid.uidByte[i], HEX));
+  }
+  Serial.println();
+
+  boolean cardIsNotEmpty; // to check if the requested data from the card is not equal to zero
+      // In this sample we use the third sector,
+    // that is: sector #2, covering block #8 up to and including block #11
+    byte sector         = 2;
+    byte blockAddr      = 8;
+   byte dataBlock[16];
+    //we dedicate the whole sector 2 to write data to it
+  /*  byte dataBlock[]    = {
+        0x00, 0x00, 0x00, 0x00, //  0
+        0x00, 0x00, 0x00, 0x00, //  0
+        0x00, 0x00, 0x00, 0x00, //  0
+        0x00, 0x00, 0x00, 0x05  //  15
+    };*/
+    byte trailerBlock   = 11;
+    
+  MFRC522::StatusCode status;
+
+    byte buffer[18];
+    byte size = sizeof(buffer);
+
+    // Authenticate using key A
+    Serial.println(F("Authenticating using key A..."));
+    status = (MFRC522::StatusCode) mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, trailerBlock, &key, &(mfrc522.uid));
+    if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("PCD_Authenticate() failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+        return;
+    }
+    
+      // Read data from the block
+    Serial.print(F("Reading data from block ")); Serial.print(blockAddr);
+    Serial.println(F(" ..."));
+    status = (MFRC522::StatusCode) mfrc522.MIFARE_Read(blockAddr, buffer, &size);
+    if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("MIFARE_Read() failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+    }
+    Serial.print(F("Data in block ")); Serial.print(blockAddr); Serial.println(F(":"));
+    dump_byte_array(buffer, 16); Serial.println();
+    Serial.println();
+    int PeriodOfTimeData = buffer[15]; //will take the last byte from block 8 and save it to reduce it afterward
+
+    // Authenticate using key B
+    Serial.println(F("Authenticating again using key B..."));
+    status = (MFRC522::StatusCode) mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_B, trailerBlock, &key, &(mfrc522.uid));
+    if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("PCD_Authenticate() failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+        return;
+    }
+
+    if (PeriodOfTimeData != 0){
+    dataBlock[15] = abs(PeriodOfTimeData-1);
+    cardIsNotEmpty = true;
+    }  
+else cardIsNotEmpty = false;
+ Serial.print("The new Period of time to operate the motor after the reduction");Serial.println(dataBlock[15]);
+
+       
+       // Write data to the block
+    Serial.print(F("Writing data into block ")); Serial.print(blockAddr);
+    Serial.println(F(" ..."));
+    dump_byte_array(dataBlock, 16); Serial.println();
+    status = (MFRC522::StatusCode) mfrc522.MIFARE_Write(blockAddr, dataBlock, 16);
+    if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("MIFARE_Write() failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+    }
+    Serial.println();
+
+//To check if the card ID match the requested card ID:
+  content.toUpperCase();
+  if (content.substring(1) == "13 14 A8 03" && cardIsNotEmpty == true) //change here the UID of the card/cards that you want to give access
+  {
+    Serial.println("Authorized access");
+    Serial.println();
+    delay(500); 
+    digitalWrite(LED_G, HIGH);
+    digitalWrite(MOTOR, HIGH);
+    tone(BUZZER, 500);
+    delay(300);
+    noTone(BUZZER);
+    delay(500);
+    digitalWrite(LED_G, LOW);
+    delay(7000); //delay 7 seconds before reading the card again
+
+  }
+
+   else   {
+    Serial.println(" Access denied");
+    digitalWrite(LED_R, HIGH);
+    digitalWrite(MOTOR, LOW);
+    tone(BUZZER, 300);
+    delay(1000);
+    digitalWrite(LED_R, LOW);
+    noTone(BUZZER);
+  }
+  
+  
+    // Read data from the block (again, should now be what we have written)
+    Serial.print(F("Reading data from block ")); Serial.print(blockAddr);
+    Serial.println(F(" ..."));
+    status = (MFRC522::StatusCode) mfrc522.MIFARE_Read(blockAddr, buffer, &size);
+    if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("MIFARE_Read() failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+    }
+    Serial.print(F("Data in block ")); Serial.print(blockAddr); Serial.println(F(":"));
+    dump_byte_array(buffer, 16); Serial.println();
+
+    // Check that data in block is what we have written
+    // by counting the number of bytes that are equal
+    Serial.println(F("Checking result..."));
+    byte count = 0;
+    for (byte i = 0; i < 16; i++) {
+        // Compare buffer (= what we've read) with dataBlock (= what we've written)
+        if (buffer[i] == dataBlock[i])
+            count++;
+    }
+    Serial.print(F("Number of bytes that match = ")); Serial.println(count);
+    if (count == 16) {
+        Serial.println(F("Success :-)"));
+    } else {
+        Serial.println(F("Failure, no match :-("));
+        Serial.println(F("  perhaps the write didn't work properly..."));
+    }
+    Serial.println();
+
+    // Stop encryption on PCD
+    mfrc522.PCD_StopCrypto1();
+}
